@@ -1,0 +1,9 @@
+#!/bin/sh
+# Launcher: runs topdf.py with this folder's virtualenv (creating it on first use).
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+if [ ! -x "$DIR/.venv/bin/python" ]; then
+  echo "Setting up the virtualenv (first run only)..." >&2
+  python3 -m venv "$DIR/.venv" || exit 1
+  "$DIR/.venv/bin/pip" install -q -r "$DIR/requirements.txt" || exit 1
+fi
+exec "$DIR/.venv/bin/python" "$DIR/topdf.py" "$@"
