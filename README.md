@@ -20,8 +20,8 @@ Requires Python 3.9+ and a Chromium-based browser (Google Chrome, Chromium, Edge
 for rendering.
 
 ```bash
-git clone https://github.com/<you>/topdf.git
-cd topdf
+git clone https://github.com/MuthuSubramanian00/analog-reading.git
+cd analog-reading
 ./topdf --help
 ```
 
