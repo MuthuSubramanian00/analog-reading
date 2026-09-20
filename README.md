@@ -71,9 +71,13 @@ Files are named after the article title, e.g. `How-to-Do-Great-Work.pdf`.
    [readability-lxml](https://github.com/buriy/python-readability) runs alongside it as a
    safety net: trafilatura drops trailing sections written as bare `<div>`s (which is how
    Blogger writes paragraphs, and it cost one post its entire conclusion), so whichever
-   extractor recovered more of the article wins. Content you selected and copied yourself
-   isn't run through the extractor at all — there's no page furniture in a selection, so
-   it's kept whole.
+   extractor recovered more of the article wins. A recovery pass then walks forward from
+   where the extraction ends and puts back trailing blocks both extractors cut — they
+   score a link-dense block as furniture, which loses things like a closing list of data
+   links. It stays inside the article container and stops at the first thing that looks
+   like site furniture (comments, tags, share links), so it can't drag in a sidebar.
+   Content you selected and copied yourself isn't run through the extractor at all —
+   there's no page furniture in a selection, so it's kept whole.
 2. **Cleanup** — embeds that can't print (a YouTube iframe prints as an error box) are
    removed, old-style layout tables are unwrapped, spacer GIFs dropped, footnote
    markers that the extractor splits off are folded back into their paragraph, and Blogspot

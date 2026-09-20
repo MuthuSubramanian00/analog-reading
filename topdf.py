@@ -111,6 +111,96 @@ def text_len(fragment):
         return 0
 
 
+CONTAINER = re.compile(r"(post-body|entry-content|article-body|articlebody|post-content|story-body)", re.I)
+FURNITURE = re.compile(
+    r"(comment|share|social|related|subscribe|newsletter|footer|nav|sidebar|widget|"
+    r"byline|author|label|tag|pager|jump-link|post-meta|entry-meta|utility|permalink|"
+    r"breadcrumb|promo|advert)", re.I)
+
+
+def recover_tail(raw_html, body_html, limit=2500):
+    """Put back trailing blocks the extractors cut from the end of the article.
+
+    Both trafilatura and readability treat a link-dense block as page furniture, which
+    loses things like a closing list of data links. Walk forward from where the extracted
+    text ends in the original page and take what follows, stopping at the first thing that
+    looks like site furniture.
+    """
+    try:
+        doc = lhtml.fromstring(raw_html)
+        kept = " ".join(lhtml.fromstring(body_html).text_content().split())
+    except (ValueError, lhtml.etree.ParserError):
+        return body_html
+    # Anchor on the last real paragraph of the extraction: a fingerprint taken from the
+    # very end can straddle two elements and then match nothing in the original page.
+    fingerprint = ""
+    for el in reversed(list(lhtml.fromstring(body_html).iter())):
+        if not isinstance(el.tag, str):
+            continue
+        txt = " ".join((el.text_content() or "").split())
+        if len(txt) >= 60:
+            fingerprint = txt[-60:]
+            break
+    if not fingerprint:
+        return body_html
+
+    # The deepest element whose text ends the extraction is where we resume.
+    anchor, best = None, None
+    for el in doc.iter():
+        if not isinstance(el.tag, str) or el.tag in ("script", "style"):
+            continue  # comments and processing instructions have no text_content()
+        txt = " ".join((el.text_content() or "").split())
+        if fingerprint in txt and (best is None or len(txt) < best):
+            anchor, best = el, len(txt)
+    if anchor is None:
+        return body_html
+
+    # Never climb out of the article itself, or the walk can re-append the whole post.
+    container = None
+    for anc in anchor.iterancestors():
+        ident = f"{anc.get('class') or ''} {anc.get('id') or ''}"
+        if anc.tag == "article" or CONTAINER.search(ident):
+            container = anc
+            break
+
+    recovered, total = [], 0
+    node = anchor
+    while node is not None and node is not container and node.tag != "body" and total < limit:
+        for sib in node.itersiblings():
+            if not isinstance(sib.tag, str):
+                continue  # comments between elements
+            ident = f"{sib.get('class') or ''} {sib.get('id') or ''}"
+            if sib.tag in ("nav", "footer", "aside", "form", "script", "style") or FURNITURE.search(ident):
+                return finish(body_html, recovered)
+            txt = " ".join((sib.text_content() or "").split())
+            if not txt and not sib.xpath(".//img"):
+                continue
+            if txt and (txt in kept or txt[:120] in kept):  # already extracted
+                continue
+            if len(txt) > limit - total:
+                break  # too big to be a leftover tail (an index or a sidebar)
+            recovered.append(sib)
+            total += len(txt)
+            if total >= limit:
+                break
+        node = node.getparent()
+    return finish(body_html, recovered)
+
+
+def finish(body_html, recovered):
+    """Append the recovered elements inside the document, not after its closing tag."""
+    if not recovered:
+        return body_html
+    doc = lhtml.fromstring(body_html)
+    target = doc.find(".//body")
+    if target is None:
+        target = doc
+    for el in recovered:
+        el.tail = None
+        target.append(el)
+    return lhtml.tostring(doc, encoding="unicode")
+
+
 def extract(raw_html, url=None):
     """Return dict(title, author, date, site, body_html) or None if nothing usable."""
     body = trafilatura.extract(
@@ -132,6 +222,14 @@ def extract(raw_html, url=None):
         body = lhtml.tostring(doc, encoding="unicode")
     if not body:
         return None
+    body = recover_tail(raw_html, body)
+    if url:
+        try:
+            d = lhtml.fromstring(body)
+            d.make_links_absolute(url)
+            body = lhtml.tostring(d, encoding="unicode")
+        except (ValueError, lhtml.etree.ParserError):
+            pass
     meta = trafilatura.extract_metadata(raw_html, default_url=url)
     title = (meta.title if meta else None) or ""
     author = (meta.author if meta else None) or ""
