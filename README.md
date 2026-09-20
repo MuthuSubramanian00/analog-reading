@@ -59,6 +59,7 @@ With no arguments, the clipboard can hold any of these:
 | `--paper A4\|Letter\|A5` | Page size (default `A4`) |
 | `--font-size 12` | Body size in points (default `11.5`) |
 | `--no-images` | Leave images out |
+| `--raw` | Keep everything you copied; don't let the extractor trim it |
 | `-t TITLE` | Override the title |
 
 Files are named after the article title, e.g. `How-to-Do-Great-Work.pdf`.
@@ -67,7 +68,14 @@ Files are named after the article title, e.g. `How-to-Do-Great-Work.pdf`.
 
 1. **Extraction** — [trafilatura](https://trafilatura.readthedocs.io/) pulls the main body
    out of the page and discards the furniture around it.
-2. **Cleanup** — old-style layout tables are unwrapped, spacer GIFs dropped, footnote
+   [readability-lxml](https://github.com/buriy/python-readability) runs alongside it as a
+   safety net: trafilatura drops trailing sections written as bare `<div>`s (which is how
+   Blogger writes paragraphs, and it cost one post its entire conclusion), so whichever
+   extractor recovered more of the article wins. Content you selected and copied yourself
+   isn't run through the extractor at all — there's no page furniture in a selection, so
+   it's kept whole.
+2. **Cleanup** — embeds that can't print (a YouTube iframe prints as an error box) are
+   removed, old-style layout tables are unwrapped, spacer GIFs dropped, footnote
    markers that the extractor splits off are folded back into their paragraph, and Blogspot
    thumbnails are swapped for full-size images so charts stay legible in print. A
    publication date that looks like a year-only guess is left out rather than printed wrong.
@@ -84,6 +92,8 @@ both ends of the web's formatting history.
 - Pages that require a login or assemble themselves with JavaScript may not download. Copy
   the article in your browser and run `topdf` with no arguments instead.
 - Bold and italic runs from clipboard HTML sometimes come through as plain text.
+- If a PDF ever holds less text than you copied, the script says so on stderr and suggests
+  `--raw`; please open an issue with the source so the extraction can be fixed.
 - Clipboard support: macOS uses `pbpaste`; Linux needs `xclip` or `wl-clipboard`. Windows is
   untested — piping via `topdf -` should still work.
 

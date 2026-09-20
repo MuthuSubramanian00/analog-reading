@@ -27,6 +27,7 @@ from urllib.parse import urlparse
 
 import trafilatura
 from lxml import html as lhtml
+from readability import Document
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_OUT = SCRIPT_DIR / "pdfs"
@@ -99,6 +100,17 @@ def text_to_html(text):
 # ---------------------------------------------------------------- extraction
 
 
+def norm_len(s):
+    return len(" ".join(s.split()))
+
+
+def text_len(fragment):
+    try:
+        return norm_len(lhtml.fromstring(fragment).text_content())
+    except (ValueError, lhtml.etree.ParserError):
+        return 0
+
+
 def extract(raw_html, url=None):
     """Return dict(title, author, date, site, body_html) or None if nothing usable."""
     body = trafilatura.extract(
@@ -106,6 +118,18 @@ def extract(raw_html, url=None):
         include_formatting=True, include_links=True, include_images=True,
         include_tables=True, favor_recall=True,
     )
+    # trafilatura drops trailing sections that are written as bare <div>s instead of
+    # <p>s — Blogger does this, which cost one post its whole conclusion. Readability
+    # keeps them, so run both and take whichever recovered more of the article.
+    try:
+        alt = Document(raw_html).summary()
+    except Exception:
+        alt = None
+    if alt and text_len(alt) > 1.1 * text_len(body or ""):
+        doc = lhtml.fromstring(alt)
+        if url:
+            doc.make_links_absolute(url)  # readability leaves relative image/link URLs
+        body = lhtml.tostring(doc, encoding="unicode")
     if not body:
         return None
     meta = trafilatura.extract_metadata(raw_html, default_url=url)
@@ -124,6 +148,10 @@ def clean_body(body_html, title):
     body = doc.find(".//body")
     if body is None:
         body = doc
+
+    # Embeds can't print: a YouTube iframe renders as an error box on paper.
+    for el in body.xpath(".//iframe|.//video|.//audio|.//embed|.//object|.//script|.//style"):
+        el.drop_tree()
 
     # Drop tables that hold no text (spacer / decoration tables, e.g. paulgraham.com nav).
     for t in body.xpath(".//table"):
@@ -190,17 +218,36 @@ def from_url(url):
     return art
 
 
-def from_text_or_html(rich, text, title=None):
-    """Build an article from pasted content: rich HTML if it extracts well, else plain text."""
+def looks_like_full_page(rich):
+    """True for a whole web page (which has furniture to strip), false for a copied selection."""
+    low = rich.lower()
+    return ("<html" in low or "<head" in low or "<nav" in low or "<footer" in low
+            or low.count("<script") >= 2)
+
+
+def sanitize_fragment(rich):
+    """Keep everything that was copied, minus what can't be printed."""
+    doc = lhtml.fromstring(rich)
+    for bad in doc.xpath("//script|//style|//noscript|//iframe|//form|//button|//input"):
+        bad.drop_tree()
+    return clean_body(lhtml.tostring(doc, encoding="unicode"), "")
+
+
+def from_text_or_html(rich, text, title=None, raw=False):
+    """Build an article from pasted content: rich HTML if usable, else plain text."""
     art = None
+    plain_len = norm_len(text)
     if rich:
-        art = extract(rich)
-        plain_len = len(text.strip())
-        if art and plain_len and len(lhtml.fromstring(art["body_html"]).text_content()) < 0.5 * plain_len:
-            art = None  # extractor dropped too much of a hand-picked selection; trust the text
+        if raw or not looks_like_full_page(rich):
+            # A selection you made by hand: nothing here is page furniture, so keep all of it.
+            art = dict(title="", author="", date="", site="", body_html=sanitize_fragment(rich))
+        else:
+            art = extract(rich)  # a whole page: strip navigation, sidebars, footers
+        if art and plain_len and norm_len(lhtml.fromstring(art["body_html"]).text_content()) < 0.5 * plain_len:
+            art = None  # extraction went badly wrong; the plain text is safer
         if art is None and not text.strip():
             art = dict(title="", author="", date="", site="",
-                       body_html=clean_body(rich, ""))
+                       body_html=sanitize_fragment(rich))
     if art is None:
         if not text.strip():
             sys.exit("Nothing to convert: the input is empty.")
@@ -215,6 +262,11 @@ def from_text_or_html(rich, text, title=None):
         art["title"] = title
     if not art["title"]:
         art["title"] = "Untitled " + dt.datetime.now().strftime("%Y-%m-%d %H%M")
+    # Say so when the PDF holds less than what was copied, instead of losing it quietly.
+    kept = norm_len(lhtml.fromstring(art["body_html"]).text_content()) + norm_len(art["title"])
+    if plain_len and kept < 0.95 * plain_len:
+        print(f"! kept {kept:,} of {plain_len:,} characters of the copied text "
+              f"({kept / plain_len:.0%}); re-run with --raw to keep all of it", file=sys.stderr)
     return art
 
 
@@ -353,6 +405,8 @@ def main():
     ap.add_argument("--paper", default="A4", choices=["A4", "Letter", "A5"], help="page size (default A4)")
     ap.add_argument("--font-size", type=float, default=11.5, help="body font size in pt (default 11.5)")
     ap.add_argument("--no-images", action="store_true", help="leave images out")
+    ap.add_argument("--raw", action="store_true",
+                    help="keep everything that was copied; don't let the extractor trim it")
     ap.add_argument("--open", action="store_true", help="open the PDF when done")
     args = ap.parse_args()
 
@@ -364,7 +418,7 @@ def main():
             for u in urls:  # clipboard holds one or more links
                 convert(from_url(u), args)
         else:
-            convert(from_text_or_html(rich, text, args.title), args)
+            convert(from_text_or_html(rich, text, args.title, args.raw), args)
         return
 
     for item in args.inputs:
@@ -375,13 +429,14 @@ def main():
         elif item == "-":
             data = sys.stdin.read()
             is_html = bool(re.search(r"<(p|div|html|body|article)\b", data, re.I))
-            art = from_text_or_html(data if is_html else None, "" if is_html else data, args.title)
+            art = from_text_or_html(data if is_html else None, "" if is_html else data,
+                                    args.title, args.raw)
         elif Path(item).is_file():
             data = Path(item).read_text(encoding="utf-8", errors="replace")
             if Path(item).suffix.lower() in (".html", ".htm"):
-                art = from_text_or_html(data, "", args.title or None)
+                art = from_text_or_html(data, "", args.title or None, args.raw)
             else:
-                art = from_text_or_html(None, data, args.title or Path(item).stem)
+                art = from_text_or_html(None, data, args.title or Path(item).stem, args.raw)
         else:
             sys.exit(f"Not a URL or file: {item}")
         convert(art, args)
